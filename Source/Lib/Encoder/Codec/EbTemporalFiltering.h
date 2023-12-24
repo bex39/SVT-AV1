@@ -52,7 +52,7 @@
 //    strength such that more detailed information can be preserved. Hence, when
 //    q is smaller than this threshold, we will adjust the filtering weight
 //    based on the q-value.
-#define TF_Q_DECAY_THRESHOLD 20
+#define TF_Q_DECAY_THRESHOLD 25
 // 3. Normalization factor used to normalize the motion search error. Since the
 //    motion search error can be large and uncontrollable, we will simply
 //    normalize it before using it to compute the filtering weight.
@@ -62,7 +62,7 @@
 //    strength of temporal filtering. When `arnr_strength` is small enough (
 //    i.e., smaller than this threshold), we will adjust the filtering weight
 //    based on the strength value.
-#define TF_STRENGTH_THRESHOLD 4
+#define TF_STRENGTH_THRESHOLD 5
 // 5. Threshold for using motion search distance to adjust the filtering weight.
 //    Concretely, larger motion search vector leads to a higher probability of
 //    unreliable search. Hence, we would like to reduce the filtering strength
@@ -81,7 +81,7 @@
 //    more conservative.
 #define TF_QINDEX_CUTOFF 128
 
-#define TF_FILTER_STRENGTH 5
+#define TF_FILTER_STRENGTH 2
 #define N_8X8_BLOCKS 64
 #define N_16X16_BLOCKS 16
 #define N_32X32_BLOCKS 4

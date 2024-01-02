@@ -4038,9 +4038,29 @@ static void set_param_based_on_input(SequenceControlSet *scs)
             // update the look ahead size
             update_look_ahead(scs);
     }
-
-    // note: always produce 64x64 SBs for vardeltaq feature 
-    scs->super_block_size = 64;
+    // In low delay mode, sb size is set to 64
+    // In two pass encoding, the first pass uses sb size=64. Also when tpl is used
+    // in 240P resolution, sb size is set to 64
+    // In variance boost mode, sb size is set to 64
+    if (scs->static_config.pred_structure == SVT_AV1_PRED_LOW_DELAY_B ||
+        scs->static_config.pass == ENC_FIRST_PASS ||
+        (scs->tpl_level && scs->input_resolution == INPUT_SIZE_240p_RANGE) ||
++       scs->static_config.variance_boost_strength)
+        scs->super_block_size = 64;
+    else
+        if (scs->static_config.enc_mode <= ENC_M1)
+            scs->super_block_size = 128;
+        else if (scs->static_config.enc_mode <= ENC_M6){
+            if (scs->static_config.qp <= 56)
+                scs->super_block_size = 64;
+            else
+                scs->super_block_size = 128;
+        }
+        else
+            scs->super_block_size = 64;
+    // When switch frame is on, all renditions must have same super block size. See spec 5.5.1, 5.9.15.
+    if (scs->static_config.pass != ENC_FIRST_PASS && scs->static_config.sframe_dist != 0)
+        scs->super_block_size = 64;
 
     // Set config info related to SB size
     if (scs->super_block_size == 128) {
@@ -4054,6 +4074,14 @@ static void set_param_based_on_input(SequenceControlSet *scs)
         scs->sb_size = 64;
         scs->seq_header.sb_mi_size = 16; // Size of the superblock in units of MI blocks
         scs->seq_header.sb_size_log2 = 4;
+    }
+    
+    if (scs->static_config.variance_boost_strength >= 4) {
+        SVT_WARN("Aggressive variance boost strength used, ensure your source video is lightly noised or noise-free to avoid artifacts\n");
+    }
+    if (scs->static_config.variance_boost_strength && scs->static_config.enable_adaptive_quantization == 1) {
+        scs->static_config.enable_adaptive_quantization = 0;
+        SVT_WARN("Variance AQ based on segmentation with variance boost not supported, setting AQ mode to 0\n");
     }
     // scs->static_config.hierarchical_levels = (scs->static_config.rate_control_mode > 1) ? 3 : scs->static_config.hierarchical_levels;
     if (scs->static_config.restricted_motion_vector && scs->super_block_size == 128) {
@@ -4655,6 +4683,9 @@ static void copy_api_from_app(
 
     scs->static_config.startup_mg_size = config_struct->startup_mg_size;
     scs->static_config.enable_roi_map = config_struct->enable_roi_map;
+    
+    // Variance boost
+    scs-> static_config.variance_boost_strength = config_struct->variance_boost_strength;
     return;
 }
 

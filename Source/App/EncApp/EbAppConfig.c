@@ -194,6 +194,8 @@
 
 #define ROI_MAP_FILE_TOKEN "--roi-map-file"
 
+#define VARIANCE_BOOST_STRENGTH_TOKEN "--variance-boost-strength"
+
 static EbErrorType validate_error(EbErrorType err, const char *token, const char *value) {
     switch (err) {
     case EB_ErrorNone: return EB_ErrorNone;
@@ -1372,6 +1374,9 @@ ConfigEntry config_entry[] = {
 
     // ROI
     {SINGLE_INPUT, ROI_MAP_FILE_TOKEN, "RoiMapFile", set_cfg_roi_map_file},
+
+    // Variance boost
+    {SINGLE_INPUT, VARIANCE_BOOST_STRENGTH_TOKEN, "VarianceBoostStrength", set_cfg_generic_token},
 
     // Termination
     {SINGLE_INPUT, NULL, NULL, NULL}};

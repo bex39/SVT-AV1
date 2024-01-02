@@ -1348,10 +1348,15 @@ static void generate_b64_me_qindex_map(PictureControlSet *pcs) {
     }
 }
 
-static int av1_get_deltaq_sb_variance_boost(uint8_t base_q_idx, uint16_t variance, uint8_t delta_q_res) {
+static int av1_get_deltaq_sb_variance_boost(
+    uint8_t base_q_idx,
+    uint16_t variance,
+    uint8_t delta_q_res,
+    uint8_t strength,
+    EbBitDepth bit_depth) {
     // boost q_index based on empirical visual testing
-    // scale boost depending on base qindex, gentle curve (lower base_q_idx = lower boost)
-    // sb variance  deltaq boost (@ base_q_idx 255)
+    // scale boost depending on base qindex, gentle (strength 2) curve (lower base_q_idx = lower boost)
+    // sb variance  approximate deltaq boost (@ base_q_idx 255)
     // 256          0
     // 64           25
     // 16           50
@@ -1364,22 +1369,50 @@ static int av1_get_deltaq_sb_variance_boost(uint8_t base_q_idx, uint16_t varianc
         variance = 1;
     }
 
+    double max_boost = 0;
+
     // compute a boost based on a fast-growing formula
     // high and medium variance sbs essentially get no boost, while increasingly lower variance sbs get stronger boosts
-    //double max_boost = (-10 * log2((double)variance) + 80) * 1.25; // gentle ramp-up, crossover at 256 variance
-    double max_boost = (-10 * log2((double)variance) + 80) * 1.75; // regular ramp-up, crossover at 256 variance
-    //double max_boost = (-10 * log2((double)variance) + 80) * 2.25; // aggressive ramp-up, crossover at 256 variance
-    //SVT_INFO("Max boost: %f\n", max_boost);
+    switch (strength)
+    {
+        case 1: // mild strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 0.75;
+            break;
+        case 2: // gentle strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 1.25;
+            break;
+        case 3: // medium strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 1.75;
+            break;
+        case 4: // aggressive strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 3;
+            break;
+        case 5: // extreme strength, crossover at 512 variance
+            max_boost = (-20 * log2((double)variance) + 180) * 1.25;
+            break;
+    }
+
     max_boost = CLIP3(0, 120, max_boost);
-    int scaled_boost = (int)(base_q_idx * max_boost / 255); // scale boost on base qindex
+
+    // current scale boost algorithm, accurate across all CRFs
+    int32_t base_q = svt_av1_convert_qindex_to_q_fp8(base_q_idx, bit_depth);
+    int32_t target_q = (int32_t)(base_q / pow(1.018, max_boost));
+
+    int32_t scaled_boost = (int32_t)(base_q_idx * -svt_av1_compute_qdelta_fp(base_q, target_q, bit_depth) / 255);
     scaled_boost = AOMMIN(80, scaled_boost);
 
-    //SVT_INFO("Variance: %d, Max boost: %f, Scaled boost: %d\n", variance, max_boost, scaled_boost);
+#if DEBUG_VAR_BOOST
+    // previous scale boost algorithm, inaccurate for low CRFs (calculated here for debugging purposes)
+    int32_t old_scaled_boost = (int32_t)(base_q_idx * max_boost / 255);
+    old_scaled_boost = AOMMIN(80, old_scaled_boost);
+
+    SVT_INFO("Variance: %d, Strength: %d, Max boost: %f, Old scaled boost: %d, Scaled boost: %d, Base q: %d, Target q: %d\n", variance, strength, max_boost, old_scaled_boost, scaled_boost, base_q, target_q);
+#endif
 
     return scaled_boost;
 }
 
-void svt_variance_adjust_qp(PictureControlSet *pcs) {
+void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
     PictureParentControlSet *ppcs_ptr = pcs->ppcs;
     SequenceControlSet      *scs      = pcs->ppcs->scs;
     SuperBlock              *sb_ptr;
@@ -1401,9 +1434,11 @@ void svt_variance_adjust_qp(PictureControlSet *pcs) {
         // adjust deltaq based on sb variance, with lower variance resulting in a lower qindex
         int boost = av1_get_deltaq_sb_variance_boost(ppcs_ptr->frm_hdr.quantization_params.base_q_idx,
                                                      ppcs_ptr->variance[sb_addr][ME_TIER_ZERO_PU_64x64],
-                                                     ppcs_ptr->frm_hdr.delta_q_params.delta_q_res);
+                                                     ppcs_ptr->frm_hdr.delta_q_params.delta_q_res,
+                                                     strength,
+                                                     scs->static_config.encoder_bit_depth);
 
-        // don't clamp qindex yet on valid deltaq range yet
+        // don't clamp qindex on valid deltaq range yet
         // we'll do it after adjusting frame qp to maximize deltaq frame range
         sb_ptr->qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
                                MAX_Q_INDEX,
@@ -1413,32 +1448,42 @@ void svt_variance_adjust_qp(PictureControlSet *pcs) {
         min_qindex = MIN(min_qindex, sb_ptr->qindex);
     }
 
-    //SVT_INFO("old base idx = %d, min_qindex %d, delta_q_res %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, min_qindex, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res);
+#if DEBUG_VAR_BOOST_QP
+    SVT_INFO("old base idx = %d, min_qindex %d, delta_q_res %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, min_qindex, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res);
+#endif
     // normalize frame qp value to maximize deltaq range
     int new_base_q_idx = (int)min_qindex + (pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
 
-    //SVT_INFO("old %d, new %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, AOMMIN(new_base_q_idx, MAX_Q_INDEX));
+#if DEBUG_VAR_BOOST_QP
+    SVT_INFO("old %d, new %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, AOMMIN(new_base_q_idx, MAX_Q_INDEX));
+#endif
     ppcs_ptr->frm_hdr.quantization_params.base_q_idx = AOMMIN(new_base_q_idx, MAX_Q_INDEX);
 
     pcs->picture_qp = (uint8_t)CLIP3((int32_t)scs->static_config.min_qp_allowed,
                                      (int32_t)scs->static_config.max_qp_allowed,
                                      (ppcs_ptr->frm_hdr.quantization_params.base_q_idx + 2) >> 2);
-    //SVT_INFO("new base idx = %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx);
 
+#if DEBUG_VAR_BOOST_QP
+    SVT_INFO("new base idx = %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx);
+#endif
     // normalize sb qindex values
     for (sb_addr = 0; sb_addr < sb_cnt; ++sb_addr) {
         sb_ptr = pcs->sb_ptr_array[sb_addr];
 
         int offset = (int)sb_ptr->qindex - ppcs_ptr->frm_hdr.quantization_params.base_q_idx;
-        //SVT_INFO("  old sb qindex = %d\n", sb_ptr->qindex);
 
+#if DEBUG_VAR_BOOST_QP
+        SVT_INFO("  old sb qindex = %d\n", sb_ptr->qindex);
+#endif
         offset = AOMMIN(offset, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
         offset = AOMMAX(offset, -pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 + 1);
 
         sb_ptr->qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
                                MAX_Q_INDEX,
                                ((int16_t)ppcs_ptr->frm_hdr.quantization_params.base_q_idx + (int16_t)offset));
-        //SVT_INFO("  new sb qindex = %d\n", sb_ptr->qindex);
+#if DEBUG_VAR_BOOST_QP
+        SVT_INFO("  new sb qindex = %d\n", sb_ptr->qindex);
+#endif
     }
  }
 
@@ -3380,13 +3425,10 @@ void *svt_aom_rate_control_kernel(void *input_ptr) {
                     sb_ptr->qindex     = frm_hdr->quantization_params.base_q_idx;
                 }
             }
-
-            // ToDo: this should be a setting
-            int variance_delta_q = 1;
-
+            
             // adjust sb qps based on variance
-            if (scs->calculate_variance && variance_delta_q) {
-                svt_variance_adjust_qp(pcs);
+            if (scs->calculate_variance && scs->static_config.variance_boost_strength) {
+                svt_variance_adjust_qp(pcs, scs->static_config.variance_boost_strength);
             }
 
             if (pcs->scs->static_config.tune == 2 && !pcs->ppcs->frm_hdr.delta_q_params.delta_q_present) {

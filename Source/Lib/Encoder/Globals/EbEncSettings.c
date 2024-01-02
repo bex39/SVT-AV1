@@ -866,6 +866,11 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet *scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    if (config->variance_boost_strength > 5) {
+        SVT_ERROR("Instance %u: Variance boost strength must be between 0 and 5\n", channel_number + 1);
+        return_error = EB_ErrorBadParameter;
+    }
+
     return return_error;
 }
 
@@ -1012,6 +1017,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration *config_ptr) {
     config_ptr->frame_scale_evts.resize_kf_denoms = NULL;
     config_ptr->frame_scale_evts.start_frame_nums = NULL;
     config_ptr->enable_roi_map                    = false;
+    config_ptr->variance_boost_strength           = 3;
     return return_error;
 }
 
@@ -1088,14 +1094,14 @@ void svt_av1_print_lib_params(SequenceControlSet *scs) {
                 SVT_INFO(
                     "SVT [config]: BRC mode / %s / max bitrate (kbps)\t\t\t: %s / %d / "
                     "%d\n",
-                    scs->tpl_level ? "rate factor" : "CQP Assignment",
-                    scs->tpl_level ? "capped CRF" : "CQP",
+                    scs->tpl_level || scs->static_config.variance_boost_strength ? "rate factor" : "CQP Assignment",
+                    scs->tpl_level || scs->static_config.variance_boost_strength  ? "capped CRF" : "CQP",
                     scs->static_config.qp,
                     (int)config->max_bit_rate / 1000);
             else
                 SVT_INFO("SVT [config]: BRC mode / %s \t\t\t\t\t: %s / %d \n",
-                         scs->tpl_level ? "rate factor" : "CQP Assignment",
-                         scs->tpl_level ? "CRF" : "CQP",
+                         scs->tpl_level || scs->static_config.variance_boost_strength ? "rate factor" : "CQP Assignment",
+                         scs->tpl_level || scs->static_config.variance_boost_strength ? "CRF" : "CQP",
                          scs->static_config.qp);
             break;
         case SVT_AV1_RC_MODE_VBR:
@@ -1109,6 +1115,10 @@ void svt_av1_print_lib_params(SequenceControlSet *scs) {
                 (int)config->target_bit_rate / 1000);
             break;
         }
+
+        SVT_INFO("SVT [config]: AQ mode / variance boost strength \t\t\t\t: %d / %d\n",
+                 config->enable_adaptive_quantization,
+                 config->variance_boost_strength);
 
         if (config->film_grain_denoise_strength != 0) {
             SVT_INFO("SVT [config]: film grain synth / denoising / level \t\t\t\t: %d / %d / %d\n",
@@ -1958,6 +1968,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration *config_
         {"qm-max", &config_struct->max_qm_level},
         {"use-fixed-qindex-offsets", &config_struct->use_fixed_qindex_offsets},
         {"startup-mg-size", &config_struct->startup_mg_size},
+        {"variance-boost-strength", &config_struct->variance_boost_strength},
     };
     const size_t uint8_opts_size = sizeof(uint8_opts) / sizeof(uint8_opts[0]);
 

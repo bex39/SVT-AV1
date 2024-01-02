@@ -932,6 +932,17 @@ typedef struct EbSvtAv1EncConfiguration {
     uint8_t padding[64 - sizeof(Bool)];
 
     AomFilmGrain *fgs_table;
+
+    /* @brief Boost low variance regions according to a fast-growing formula
+    0: no boost
+    1: mild boost
+    2: gentle boost
+    3: medium boost
+    4: aggressive boost
+    5: hyper-aggressive boost
+    Default is 3 (medium curve )*/
+    uint8_t variance_boost_strength;
+
 } EbSvtAv1EncConfiguration;
 
 /**

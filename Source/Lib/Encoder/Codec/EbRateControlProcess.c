@@ -1427,6 +1427,7 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
     }
 
     uint8_t min_qindex = MAX_Q_INDEX;
+    uint8_t max_qindex = MIN_Q_INDEX;
 
     for (sb_addr = 0; sb_addr < sb_cnt; ++sb_addr) {
         sb_ptr = pcs->sb_ptr_array[sb_addr];
@@ -1444,48 +1445,54 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
                                MAX_Q_INDEX,
                                sb_ptr->qindex - boost);
 
-        // record last seen min qindex for frame qp readjusting
-        min_qindex = MIN(min_qindex, sb_ptr->qindex);
+        // record last seen min and max qindexes for frame qp readjusting
+        min_qindex = AOMMIN(min_qindex, sb_ptr->qindex);
+        max_qindex = AOMMAX(max_qindex, sb_ptr->qindex);
     }
 
-#if DEBUG_VAR_BOOST_QP
-    SVT_INFO("old base idx = %d, min_qindex %d, delta_q_res %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, min_qindex, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res);
-#endif
-    // normalize frame qp value to maximize deltaq range
-    int new_base_q_idx = (int)min_qindex + (pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
+    // normalize and clamp frame qindex value to maximize deltaq range
+    int range = max_qindex - min_qindex;
+    range = AOMMIN(range, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 8 - 2);
+    int new_base_q_idx = (int)min_qindex + (range >> 1);
 
 #if DEBUG_VAR_BOOST_QP
-    SVT_INFO("old %d, new %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx, AOMMIN(new_base_q_idx, MAX_Q_INDEX));
+    // previous calculation method that always set frame qindex to half the available deltaq range, even when not needed
+    int old_new_base_q_idx = (int)min_qindex + (pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
+    old_new_base_q_idx = AOMMIN(old_new_base_q_idx, MAX_Q_INDEX);
+
+    SVT_INFO("old qidx %d, min_qidx %d, max_qidx %d, delta_q_res %d, new qidx %d, new (old algo) %d, range %d\n",
+        ppcs_ptr->frm_hdr.quantization_params.base_q_idx,
+        min_qindex,
+        max_qindex,
+        pcs->ppcs->frm_hdr.delta_q_params.delta_q_res,
+        new_base_q_idx,
+        old_new_base_q_idx,
+        range);
 #endif
-    ppcs_ptr->frm_hdr.quantization_params.base_q_idx = AOMMIN(new_base_q_idx, MAX_Q_INDEX);
+    ppcs_ptr->frm_hdr.quantization_params.base_q_idx = new_base_q_idx;
 
     pcs->picture_qp = (uint8_t)CLIP3((int32_t)scs->static_config.min_qp_allowed,
                                      (int32_t)scs->static_config.max_qp_allowed,
                                      (ppcs_ptr->frm_hdr.quantization_params.base_q_idx + 2) >> 2);
 
-#if DEBUG_VAR_BOOST_QP
-    SVT_INFO("new base idx = %d\n", ppcs_ptr->frm_hdr.quantization_params.base_q_idx);
-#endif
     // normalize sb qindex values
     for (sb_addr = 0; sb_addr < sb_cnt; ++sb_addr) {
         sb_ptr = pcs->sb_ptr_array[sb_addr];
 
         int offset = (int)sb_ptr->qindex - ppcs_ptr->frm_hdr.quantization_params.base_q_idx;
-
-#if DEBUG_VAR_BOOST_QP
-        SVT_INFO("  old sb qindex = %d\n", sb_ptr->qindex);
-#endif
         offset = AOMMIN(offset, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
         offset = AOMMAX(offset, -pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 + 1);
 
-        sb_ptr->qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
-                               MAX_Q_INDEX,
-                               ((int16_t)ppcs_ptr->frm_hdr.quantization_params.base_q_idx + (int16_t)offset));
+        uint8_t new_qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
+                                   MAX_Q_INDEX,
+                                   ((int16_t)ppcs_ptr->frm_hdr.quantization_params.base_q_idx + (int16_t)offset));
 #if DEBUG_VAR_BOOST_QP
-        SVT_INFO("  new sb qindex = %d\n", sb_ptr->qindex);
+        SVT_INFO("  sb %d qindex: old %d, new %d\n", sb_addr, sb_ptr->qindex, new_qindex);
 #endif
+        sb_ptr->qindex = new_qindex;
     }
  }
+
 
 /******************************************************
  * svt_aom_sb_qp_derivation_tpl_la

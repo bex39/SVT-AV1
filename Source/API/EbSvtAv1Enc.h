@@ -943,8 +943,8 @@ typedef struct EbSvtAv1EncConfiguration {
        Default is 3 (medium curve )*/
     uint8_t variance_boost_strength;
 
-    /* @brief Enables the new 8x8-based variance algorithm, and picks an 8x8 variance value per superblock to use as boost
-       Lower values enable detecting more false negatives, at the expense of false positives (bitrate increase)
+    /* @brief Enables the new 8x8-based variance algorithm, and picks an 8x8 variance value per superblock to determine boost
+       Lower values enable detecting more blocks that need boosting, at the expense of more possible false positives (overall bitrate increase)
         0: disabled, uses classic 64x64 based variance algorithm instead
         1: enabled, 1st octile
         4: enabled, median

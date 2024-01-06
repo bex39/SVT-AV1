@@ -1383,7 +1383,7 @@ static int av1_get_deltaq_sb_variance_boost(
 
 #if DEBUG_VAR_BOOST
     SVT_INFO("64x64 variance: %d\n", variances[ME_TIER_ZERO_PU_64x64]);
-    SVT_INFO("8x8 min %d, 1st oct %d, median %d, max %d\n", ordered_variances[0], ordered_variances[8], ordered_variances[32], ordered_variances[63]);
+    SVT_INFO("8x8 min %d, 1st oct %d, median %d, max %d\n", ordered_variances[0], ordered_variances[7], ordered_variances[31], ordered_variances[63]);
     SVT_INFO("8x8 variances\n");
     uint16_t* variances_row = variances + ME_TIER_ZERO_PU_8x8_0;
 
@@ -1582,8 +1582,8 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength, uint8_t va
         sb_ptr = pcs->sb_ptr_array[sb_addr];
 
         int offset = (int)sb_ptr->qindex - ppcs_ptr->frm_hdr.quantization_params.base_q_idx;
-        offset = AOMMIN(offset, VAR_BOOST_MAX_DELTAQ_RANGE);
-        offset = AOMMAX(offset, -VAR_BOOST_MAX_DELTAQ_RANGE);
+        offset = AOMMIN(offset, VAR_BOOST_MAX_DELTAQ_RANGE >> 1);
+        offset = AOMMAX(offset, -VAR_BOOST_MAX_DELTAQ_RANGE >> 1);
 
         uint8_t new_qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
                                    MAX_Q_INDEX,

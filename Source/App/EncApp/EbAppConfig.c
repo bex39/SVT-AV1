@@ -195,6 +195,7 @@
 #define ROI_MAP_FILE_TOKEN "--roi-map-file"
 
 #define VARIANCE_BOOST_STRENGTH_TOKEN "--variance-boost-strength"
+#define NEW_VARIANCE_OCTILE_TOKEN "--new-variance-octile"
 
 static EbErrorType validate_error(EbErrorType err, const char *token, const char *value) {
     switch (err) {
@@ -1200,6 +1201,19 @@ ConfigEntry config_entry_color_description[] = {
     // Termination
     {SINGLE_INPUT, NULL, NULL, NULL}};
 
+    ConfigEntry config_entry_variance_boost[] = {
+    // Variance boost
+    {SINGLE_INPUT,
+     VARIANCE_BOOST_STRENGTH_TOKEN,
+     "Variance boost strength, default is 3 [0-5]",
+     set_cfg_generic_token},
+    {SINGLE_INPUT,
+     NEW_VARIANCE_OCTILE_TOKEN,
+     "Octile for new 8x8 variance algorithm. Set to 0 to use 64x64 variance algorithm, default is 4 (median) [0-8]",
+     set_cfg_generic_token},
+    // Termination
+    {SINGLE_INPUT, NULL, NULL, NULL}};
+
 ConfigEntry config_entry[] = {
     // Options
     {SINGLE_INPUT, INPUT_FILE_TOKEN, "InputFile", set_cfg_input_file},
@@ -1377,6 +1391,7 @@ ConfigEntry config_entry[] = {
 
     // Variance boost
     {SINGLE_INPUT, VARIANCE_BOOST_STRENGTH_TOKEN, "VarianceBoostStrength", set_cfg_generic_token},
+    {SINGLE_INPUT, NEW_VARIANCE_OCTILE_TOKEN, "NewVarianceOctile", set_cfg_generic_token},
 
     // Termination
     {SINGLE_INPUT, NULL, NULL, NULL}};
@@ -2064,6 +2079,21 @@ uint32_t get_help(int32_t argc, char *const argv[]) {
                    cd_token_index->name);
         }
     }
+
+    printf("\nVariance Boost Options:\n");
+    for (ConfigEntry *cd_token_index = config_entry_variance_boost; cd_token_index->token; ++cd_token_index) {
+        switch (check_long(*cd_token_index, cd_token_index[1])) {
+        case 1:
+            printf("  %s, %-25s    %-25s\n", cd_token_index->token, cd_token_index[1].token, cd_token_index->name);
+            ++cd_token_index;
+            break;
+        default:
+            printf(cd_token_index->token[1] == '-' ? "      %-25s    %-25s\n" : "      -%-25s   %-25s\n",
+                   cd_token_index->token,
+                   cd_token_index->name);
+        }
+    }
+
     return 1;
 }
 

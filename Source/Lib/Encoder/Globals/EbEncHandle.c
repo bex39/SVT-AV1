@@ -1612,6 +1612,9 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType *svt_enc_component)
                               enc_handle_ptr->scs_instance_array[instance_index]->scs->static_config.resize_mode > RESIZE_NONE;
         input_data.rtc_tune = (enc_handle_ptr->scs_instance_array[instance_index]->scs->static_config.pred_structure == SVT_AV1_PRED_LOW_DELAY_B) ? true : false;
         input_data.static_config = enc_handle_ptr->scs_instance_array[instance_index]->scs->static_config;
+        input_data.variance_boost_strength = enc_handle_ptr->scs_instance_array[instance_index]->scs->static_config.variance_boost_strength;
+        input_data.new_variance_octile = enc_handle_ptr->scs_instance_array[instance_index]->scs->static_config.new_variance_octile;
+
         EB_NEW(
             enc_handle_ptr->picture_parent_control_set_pool_ptr_array[instance_index],
             svt_system_resource_ctor,
@@ -4045,7 +4048,7 @@ static void set_param_based_on_input(SequenceControlSet *scs)
     if (scs->static_config.pred_structure == SVT_AV1_PRED_LOW_DELAY_B ||
         scs->static_config.pass == ENC_FIRST_PASS ||
         (scs->tpl_level && scs->input_resolution == INPUT_SIZE_240p_RANGE) ||
-+       scs->static_config.variance_boost_strength)
+        scs->static_config.variance_boost_strength)
         scs->super_block_size = 64;
     else
         if (scs->static_config.enc_mode <= ENC_M1)
@@ -4077,7 +4080,7 @@ static void set_param_based_on_input(SequenceControlSet *scs)
     }
     
     if (scs->static_config.variance_boost_strength >= 4) {
-        SVT_WARN("Aggressive variance boost strength used, ensure your source video is lightly noised or noise-free to avoid artifacts\n");
+        SVT_WARN("Aggressive variance boost strength used, ensure source content is lightly noised or noise-free to avoid artifacts\n");
     }
     if (scs->static_config.variance_boost_strength && scs->static_config.enable_adaptive_quantization == 1) {
         scs->static_config.enable_adaptive_quantization = 0;
@@ -4295,7 +4298,8 @@ static void set_param_based_on_input(SequenceControlSet *scs)
     // Variance is required for scene change detection and segmentation-based quantization and subjective mode tf control
     if (scs->static_config.enable_adaptive_quantization == 1 ||
         scs->static_config.scene_change_detection == 1       ||
-        scs->vq_ctrls.sharpness_ctrls.tf == 1)
+        scs->vq_ctrls.sharpness_ctrls.tf == 1                ||
+        scs->static_config.variance_boost_strength)
         scs->calculate_variance = 1;
     else if (scs->static_config.enc_mode <= ENC_M9)
         scs->calculate_variance = 1;
@@ -4685,7 +4689,8 @@ static void copy_api_from_app(
     scs->static_config.enable_roi_map = config_struct->enable_roi_map;
     
     // Variance boost
-    scs-> static_config.variance_boost_strength = config_struct->variance_boost_strength;
+    scs->static_config.variance_boost_strength = config_struct->variance_boost_strength;
+    scs->static_config.new_variance_octile = config_struct->new_variance_octile;
     return;
 }
 

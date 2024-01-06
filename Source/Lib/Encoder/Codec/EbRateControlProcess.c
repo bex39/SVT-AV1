@@ -1348,10 +1348,103 @@ static void generate_b64_me_qindex_map(PictureControlSet *pcs) {
     }
 }
 
+int variance_comp_int(const void *a, const void *b)
+{
+  return (int)* (uint16_t *)a - * (uint16_t *)b;
+}
+
+#define VAR_BOOST_MAX_UNSCALED_DELTAQ_RANGE 120
+#define VAR_BOOST_MAX_DELTAQ_RANGE 80
+
 static int av1_get_deltaq_sb_variance_boost(
     uint8_t base_q_idx,
+    uint16_t* variances,
+    uint8_t strength,
+    EbBitDepth bit_depth,
+    uint8_t octile) {
+
+    // boost q_index based on empirical visual testing
+    // scale boost depending on base qindex, gentle (strength 2) curve (lower base_q_idx = lower boost)
+    // sb variance  approximate deltaq boost (@ base_q_idx 255)
+    // 256          0
+    // 64           25
+    // 16           50
+    // 4            75
+    // 1            100
+
+    // copy sb 8x8 variance values to an array for ordering
+    uint16_t ordered_variances[64];
+    memcpy(&ordered_variances, variances + ME_TIER_ZERO_PU_8x8_0, sizeof(uint16_t) * 64);
+    qsort(&ordered_variances, 64, sizeof(uint16_t), variance_comp_int);
+
+    // Take the 8x8 variance value in the specified octile
+    assert(octile >= 1 && octile <= 8);
+    uint16_t variance = ordered_variances[octile * 8 - 1];
+
+#if DEBUG_VAR_BOOST
+    SVT_INFO("64x64 variance: %d\n", variances[ME_TIER_ZERO_PU_64x64]);
+    SVT_INFO("8x8 min %d, 1st oct %d, median %d, max %d\n", ordered_variances[0], ordered_variances[8], ordered_variances[32], ordered_variances[63]);
+    SVT_INFO("8x8 variances\n");
+    uint16_t* variances_row = variances + ME_TIER_ZERO_PU_8x8_0;
+
+    for (int row = 0; row < 8; row++) {
+        SVT_INFO("%5d, %5d, %5d, %5d, %5d, %5d, %5d, %5d\n", variances_row[0], variances_row[1], variances_row[2], variances_row[3], variances_row[4], variances_row[5], variances_row[6], variances_row[7]);
+        variances_row += 8;
+    }
+#endif
+
+    // variance = 0 areas are either completely flat patches or very fine gradients
+    // SVT-AV1 doesn't have enough resolution to tell them apart, so let's assume they're not flat and boost them
+    if (variance == 0) {
+        variance = 1;
+    }
+
+    double max_boost = 0;
+
+    // compute a boost based on a fast-growing formula
+    // high and medium variance sbs essentially get no boost, while increasingly lower variance sbs get stronger boosts
+    switch (strength)
+    {
+        case 1: // mild strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 0.75;
+            break;
+        case 2: // gentle strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 1.25;
+            break;
+        case 3: // medium strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 1.75;
+            break;
+        case 4: // aggressive strength, crossover at 256 variance
+            max_boost = (-10 * log2((double)variance) + 80) * 3;
+            break;
+        case 5: // extreme strength, crossover at 512 variance
+            max_boost = (-20 * log2((double)variance) + 180) * 1.25;
+            break;
+    }
+
+    max_boost = CLIP3(0, VAR_BOOST_MAX_UNSCALED_DELTAQ_RANGE, max_boost);
+
+    // current scale boost algorithm, accurate across all CRFs
+    int32_t base_q = svt_av1_convert_qindex_to_q_fp8(base_q_idx, bit_depth);
+    int32_t target_q = (int32_t)(base_q / pow(1.018, max_boost));
+
+    int32_t scaled_boost = (int32_t)(base_q_idx * -svt_av1_compute_qdelta_fp(base_q, target_q, bit_depth) / 255);
+    scaled_boost = AOMMIN(VAR_BOOST_MAX_DELTAQ_RANGE, scaled_boost);
+
+#if DEBUG_VAR_BOOST
+    // previous scale boost algorithm, inaccurate for low CRFs (calculated here for debugging purposes)
+    int32_t old_scaled_boost = (int32_t)(base_q_idx * max_boost / 255);
+    old_scaled_boost = AOMMIN(VAR_BOOST_MAX_DELTAQ_RANGE, old_scaled_boost);
+
+    SVT_INFO("Variance: %d, Strength: %d, Max boost: %f, Old scaled boost: %d, Scaled boost: %d, Base q: %d, Target q: %d\n", variance, strength, max_boost, old_scaled_boost, scaled_boost, base_q, target_q);
+#endif
+
+    return scaled_boost;
+}
+
+static int av1_get_deltaq_sb_variance_boost_classic(
+    uint8_t base_q_idx,
     uint16_t variance,
-    uint8_t delta_q_res,
     uint8_t strength,
     EbBitDepth bit_depth) {
     // boost q_index based on empirical visual testing
@@ -1412,7 +1505,7 @@ static int av1_get_deltaq_sb_variance_boost(
     return scaled_boost;
 }
 
-void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
+void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength, uint8_t variance_octile) {
     PictureParentControlSet *ppcs_ptr = pcs->ppcs;
     SequenceControlSet      *scs      = pcs->ppcs->scs;
     SuperBlock              *sb_ptr;
@@ -1431,13 +1524,22 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
 
     for (sb_addr = 0; sb_addr < sb_cnt; ++sb_addr) {
         sb_ptr = pcs->sb_ptr_array[sb_addr];
+        int boost = 0;
 
-        // adjust deltaq based on sb variance, with lower variance resulting in a lower qindex
-        int boost = av1_get_deltaq_sb_variance_boost(ppcs_ptr->frm_hdr.quantization_params.base_q_idx,
-                                                     ppcs_ptr->variance[sb_addr][ME_TIER_ZERO_PU_64x64],
-                                                     ppcs_ptr->frm_hdr.delta_q_params.delta_q_res,
+        if (variance_octile) {
+            // adjust deltaq based on sb variance (new, 8x8-based), with lower variance resulting in a lower qindex
+            boost = av1_get_deltaq_sb_variance_boost(ppcs_ptr->frm_hdr.quantization_params.base_q_idx,
+                                                     ppcs_ptr->variance[sb_addr],
                                                      strength,
-                                                     scs->static_config.encoder_bit_depth);
+                                                     scs->static_config.encoder_bit_depth,
+                                                     variance_octile);
+        } else {
+            // adjust deltaq based on sb variance (classic, 64x64-based), with lower variance resulting in a lower qindex
+            boost = av1_get_deltaq_sb_variance_boost_classic(ppcs_ptr->frm_hdr.quantization_params.base_q_idx,
+                                                            ppcs_ptr->variance[sb_addr][ME_TIER_ZERO_PU_64x64],
+                                                            strength,
+                                                            scs->static_config.encoder_bit_depth);
+        }
 
         // don't clamp qindex on valid deltaq range yet
         // we'll do it after adjusting frame qp to maximize deltaq frame range
@@ -1452,7 +1554,7 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
 
     // normalize and clamp frame qindex value to maximize deltaq range
     int range = max_qindex - min_qindex;
-    range = AOMMIN(range, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 8 - 2);
+    range = AOMMIN(range, VAR_BOOST_MAX_DELTAQ_RANGE);
     int new_base_q_idx = (int)min_qindex + (range >> 1);
 
 #if DEBUG_VAR_BOOST_QP
@@ -1480,8 +1582,8 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
         sb_ptr = pcs->sb_ptr_array[sb_addr];
 
         int offset = (int)sb_ptr->qindex - ppcs_ptr->frm_hdr.quantization_params.base_q_idx;
-        offset = AOMMIN(offset, pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 - 1);
-        offset = AOMMAX(offset, -pcs->ppcs->frm_hdr.delta_q_params.delta_q_res * 9 * 4 + 1);
+        offset = AOMMIN(offset, VAR_BOOST_MAX_DELTAQ_RANGE);
+        offset = AOMMAX(offset, -VAR_BOOST_MAX_DELTAQ_RANGE);
 
         uint8_t new_qindex = CLIP3(1, // q_index 0 is lossless, and is currently not supported in SVT-AV1
                                    MAX_Q_INDEX,
@@ -1492,7 +1594,6 @@ void svt_variance_adjust_qp(PictureControlSet *pcs, uint8_t strength) {
         sb_ptr->qindex = new_qindex;
     }
  }
-
 
 /******************************************************
  * svt_aom_sb_qp_derivation_tpl_la
@@ -3435,7 +3536,9 @@ void *svt_aom_rate_control_kernel(void *input_ptr) {
             
             // adjust sb qps based on variance
             if (scs->calculate_variance && scs->static_config.variance_boost_strength) {
-                svt_variance_adjust_qp(pcs, scs->static_config.variance_boost_strength);
+                svt_variance_adjust_qp(pcs,
+                                       scs->static_config.variance_boost_strength,
+                                       scs->static_config.new_variance_octile);
             }
 
             if (pcs->scs->static_config.tune == 2 && !pcs->ppcs->frm_hdr.delta_q_params.delta_q_present) {

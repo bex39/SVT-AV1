@@ -879,9 +879,18 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet *scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->new_variance_octile > 8) {
-        SVT_ERROR("Instance %u: New (8x8) variance octile must be between 0 and 8\n", channel_number + 1);
+    if (config->variance_boost_strength != 0 && config->variance_octile == 0) {
+        SVT_ERROR("Instance %u: Must define variance octile value if using variance boost (between 1 and 8)\n", channel_number + 1);
         return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->variance_octile > 8) {
+        SVT_ERROR("Instance %u: Variance boost octile must be between 1 and 8\n", channel_number + 1);
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->enable_alt_curve > 1) {
+        SVT_ERROR("Instance %u: Enable alt curve must be between 0 and 1\n", channel_number + 1);
     }
 
     if (config->sharpness > 7 || config->sharpness < -7) {
@@ -1036,7 +1045,8 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration *config_ptr) {
     config_ptr->frame_scale_evts.start_frame_nums = NULL;
     config_ptr->enable_roi_map                    = false;
     config_ptr->variance_boost_strength           = 2;
-    config_ptr->new_variance_octile               = 6;
+    config_ptr->variance_octile                   = 6;
+    config_ptr->enable_alt_curve                  = 0;
     config_ptr->sharpness                         = 0;
     return return_error;
 }
@@ -1116,7 +1126,7 @@ void svt_av1_print_lib_params(SequenceControlSet *scs) {
                     "SVT [config]: BRC mode / %s / max bitrate (kbps)\t\t\t: %s / %d / "
                     "%d\n",
                     scs->tpl_level || scs->static_config.variance_boost_strength ? "rate factor" : "CQP Assignment",
-                    scs->tpl_level || scs->static_config.variance_boost_strength  ? "capped CRF" : "CQP",
+                    scs->tpl_level || scs->static_config.variance_boost_strength ? "capped CRF" : "CQP",
                     scs->static_config.qp,
                     (int)config->max_bit_rate / 1000);
             else
@@ -1141,15 +1151,12 @@ void svt_av1_print_lib_params(SequenceControlSet *scs) {
             SVT_INFO("SVT [config]: AQ mode / variance boost strength \t\t\t\t: %d / %d\n",
                     config->enable_adaptive_quantization,
                     config->variance_boost_strength);
-        } else if (config->new_variance_octile) {
-            SVT_INFO("SVT [config]: AQ mode / variance boost strength / sample size / octile\t: %d / %d / 8x8 / %d\n",
+        } else {
+            SVT_INFO("SVT [config]: AQ mode / variance boost strength / octile / curve\t\t: %d / %d / %d / %s\n",
                     config->enable_adaptive_quantization,
                     config->variance_boost_strength,
-                    config->new_variance_octile);
-        } else {
-            SVT_INFO("SVT [config]: AQ mode / variance boost strength / sample size\t\t: %d / %d / 64x64\n",
-                    config->enable_adaptive_quantization,
-                    config->variance_boost_strength);
+                    config->variance_octile,
+                    config->enable_alt_curve ? "alt" : "regular");
         }
 
         if (config->film_grain_denoise_strength != 0) {
@@ -2007,7 +2014,8 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration *config_
         {"use-fixed-qindex-offsets", &config_struct->use_fixed_qindex_offsets},
         {"startup-mg-size", &config_struct->startup_mg_size},
         {"variance-boost-strength", &config_struct->variance_boost_strength},
-        {"new-variance-octile", &config_struct->new_variance_octile},
+        {"variance-octile", &config_struct->variance_octile},
+        {"enable-alt-curve", &config_struct->enable_alt_curve},
     };
     const size_t uint8_opts_size = sizeof(uint8_opts) / sizeof(uint8_opts[0]);
 
